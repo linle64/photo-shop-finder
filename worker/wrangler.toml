@@ -1,0 +1,10 @@
+name = "photo-shop-finder-api"
+main = "index.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+ALLOWED_ORIGIN = "https://linle64.github.io"
+
+# 让请求从日本附近发出，避开 Gemini 对部分地区的限制（仅是提示，需实测出口地区）
+[placement]
+region = "gcp:asia-northeast1"
