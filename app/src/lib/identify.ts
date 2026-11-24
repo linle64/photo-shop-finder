@@ -28,7 +28,7 @@ const SCHEMA = {
 };
 
 /** 识别一张商品照片。失败时抛出带中文说明的 Error。apiUrl 为空时使用 key 直接调用 Gemini。 */
-export async function identify(file: File, apiUrl: string, key: string, onRetry: (n: number) => void): Promise<Identified> {
+export async function identify(file: File, apiUrl: string, key: string, onProgress: (message: string) => void): Promise<Identified> {
   const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => {
     throw new IdentifyError('这张图片无法打开，请换一张 JPG 或 PNG 照片。', false);
   });
@@ -58,29 +58,42 @@ export async function identify(file: File, apiUrl: string, key: string, onRetry:
         signal: AbortSignal.timeout(30000)
       });
 
-  let res: Response | null = null;
-  let retries = 0;
-  const tried: string[] = [];
+  // 用密钥向 Google 查询当前能用的 flash 模型，全部轮流试；查不到就用写死的备用名单。
+  const listed = apiUrl ? [''] : await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key }, signal: AbortSignal.timeout(8000) })
+    .then(r => (r.ok ? r.json() : null))
+    .then((j: { models?: { name: string; supportedGenerationMethods?: string[] }[] } | null) => (j?.models ?? [])
+      .filter(m => m.supportedGenerationMethods?.includes('generateContent') && /flash/.test(m.name) && !/image|tts|live|audio|embed|robotics|computer|gemma|thinking/.test(m.name))
+      .map(m => m.name.replace('models/', ''))
+      .sort((x, y) => Number(/\d+(\.\d+)?/.exec(y)?.[0] ?? 0) - Number(/\d+(\.\d+)?/.exec(x)?.[0] ?? 0) || Number(/lite/.test(x)) - Number(/lite/.test(y)))
+      .slice(0, 6))
+    .catch(() => []);
+  const models = listed.length ? listed : apiUrl ? [''] : MODELS;
+
+  // 最近一次各模型的状态；503/429/404 换下一个，整轮都繁忙时歇几秒再来一轮。
+  const status = new Map<string, number>();
   let reason = '';
-  for (const model of apiUrl ? [''] : MODELS) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  let res: Response | null = null;
+  for (let round = 0; round < 3; round++) {
+    for (const model of models) {
+      if (status.get(model) === 404) continue;
       let timedOut = false;
       res = await request(model).catch((e: Error) => { timedOut = e.name === 'TimeoutError'; return null; });
       if (!res) throw new IdentifyError(timedOut ? '识别超时，请重试。' : '连不上识别服务。请检查网络；若在中国大陆漫游，换日本本地网络或 Wi‑Fi 后重试。');
-      if (res.status !== 503) break;
-      if (attempt === 0) {
-        onRetry(++retries);
-        await new Promise(r => setTimeout(r, 2000));
-      }
+      status.set(model, res.status);
+      if (![503, 404, 429].includes(res.status)) break;
+      reason = ((await res.clone().json().catch(() => null))?.error?.message as string | undefined)?.slice(0, 120) ?? reason;
+      onProgress(`${model.replace('gemini-', '') || '识别服务'} 繁忙，换下一个…`);
     }
-    const detail = (await res!.clone().json().catch(() => null))?.error?.message as string | undefined;
-    if (detail) reason = detail.slice(0, 120);
-    tried.push(`${model.replace('gemini-', '')} ${res!.status}`);
-    if (![503, 404, 429].includes(res!.status)) break;
+    if (res!.ok || ![503, 429].includes(res!.status)) break;
+    if (round < 2) {
+      onProgress(`服务繁忙，稍等再试（第 ${round + 2}/3 轮）…`);
+      await new Promise(r => setTimeout(r, 3000));
+    }
   }
-  if (res!.status === 429) throw new IdentifyError('今天的识别次数用完了，请稍后再试。', false);
+  const summary = [...status].map(([m, c]) => `${m.replace('gemini-', '') || '服务'} ${c}`).join('、');
+  if ([...status.values()].every(c => c === 429)) throw new IdentifyError('今天的识别次数用完了，请稍后再试。', false);
   if (res!.status === 400 || res!.status === 403) throw new IdentifyError(apiUrl ? '识别服务暂时不可用。' : '密钥无效，请在页面底部重新填写。', false);
-  if (!res!.ok) throw new IdentifyError(`识别服务繁忙（${tried.length ? tried.join('、') : res!.status}）${reason ? '：' + reason : ''}`);
+  if (!res!.ok) throw new IdentifyError(`识别服务繁忙（${summary}）${reason ? '：' + reason : ''}`);
 
   const body = await res!.json().catch(() => null);
   const text: string | undefined = apiUrl ? JSON.stringify(body) : body?.candidates?.[0]?.content?.parts?.[0]?.text;

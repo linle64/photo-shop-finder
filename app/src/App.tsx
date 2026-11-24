@@ -59,7 +59,7 @@ export default function App() {
     setPhoto(nextPhoto);
     setBusy(true);
     setStatus('正在识别商品…');
-    const out = await identify(file, API_URL, key, n => setStatus(`服务繁忙，正在重试（${n}/3）…`)).catch((e: unknown) => {
+    const out = await identify(file, API_URL, key, setStatus).catch((e: unknown) => {
       if (my === job.current) {
         const err = e instanceof IdentifyError ? e : new IdentifyError('出错了，请重试。');
         setError({ message: err.message, retryable: err.retryable });
