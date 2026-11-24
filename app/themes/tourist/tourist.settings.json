@@ -1,0 +1,32 @@
+{
+  "name": "tourist",
+  "like": "neutral",
+  "mode": "both",
+  "settings": [
+    {
+      "thing": "height",
+      "value": "44px",
+      "source": "property",
+      "on": "button"
+    },
+    {
+      "thing": "height",
+      "value": "44px",
+      "source": "property",
+      "on": "inputs"
+    },
+    {
+      "thing": "height",
+      "value": "44px",
+      "source": "property",
+      "on": "collapsible-trigger"
+    },
+    {
+      "thing": "height",
+      "value": "44px",
+      "source": "property",
+      "on": "token"
+    }
+  ],
+  "lifted": []
+}
