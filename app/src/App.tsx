@@ -221,6 +221,35 @@ export default function App() {
               </VStack>
             )}
 
+            {photo && !busy && (
+              <VStack gap={2}>
+                <Heading level={2}>用各 App 以图搜图</Heading>
+                <Text type="body" color="secondary">不依赖上面的识别。先把照片存进相册，再到各 App 的相机搜索里选最新一张。</Text>
+                {lastFile.current && navigator.canShare?.({ files: [lastFile.current] }) && (
+                  <Button
+                    label="保存照片 / 分享给 App"
+                    variant="secondary"
+                    size="lg"
+                    width="100%"
+                    onClick={() => void navigator.share({ files: [lastFile.current!] }).catch(() => undefined)}
+                  />
+                )}
+                <Text type="supporting" color="secondary">在分享菜单里选「存储图像」。若菜单里直接有 Google 或其他 App，也可以直接选。</Text>
+                {[
+                  ['Google Lens', '打开 Google App，点搜索栏里的相机图标，选最新照片。'],
+                  ['Amazon', '打开 Amazon App，点搜索栏右侧的相机图标，选最新照片。'],
+                  ['乐天市场', '打开乐天 App，用搜索栏里的图片搜索（画像検索），选最新照片。'],
+                  ['Mercari', '打开 Mercari App，点搜索栏里的相机图标，选最新照片。'],
+                  ['淘宝 / 京东 / 拼多多', '打开 App，找搜索栏里的相机图标，选最新照片。入口位置因版本而异，我没有逐一核实。']
+                ].map(([name, steps]) => (
+                  <VStack key={name} gap={0}>
+                    <Text type="body" weight="bold">{name}</Text>
+                    <Text type="supporting" color="secondary">{steps}</Text>
+                  </VStack>
+                ))}
+              </VStack>
+            )}
+
             <Text type="supporting" color="secondary">照片仅用于识别商品，由 Google Gemini 处理。请避免拍到人脸、证件和个人信息。</Text>
 
             {!API_URL && (
