@@ -15,10 +15,13 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { CameraIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline';
 import { identify, IdentifyError, type Identified } from './lib/identify';
+import { lensSearch, type LensItem } from './lib/lens';
 import { SHOPS, STORES } from './lib/shops';
 
 // 识别代理地址。部署 worker/ 后在构建时设置 VITE_API_URL，游客就不需要自己的密钥。
 const API_URL = import.meta.env.VITE_API_URL ?? '';
+// 以图搜图服务（worker/ 的 /lens）。构建时可设 VITE_LENS_URL，也可以在页面底部填写。
+const LENS_URL = import.meta.env.VITE_LENS_URL ?? '';
 
 export default function App() {
   const [photo, setPhoto] = useState('');
@@ -31,6 +34,11 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini-key') ?? '');
   const [keyDraft, setKeyDraft] = useState('');
   const [keyPrompt, setKeyPrompt] = useState(0);
+  const [lensUrl, setLensUrl] = useState(() => LENS_URL || localStorage.getItem('lens-url') || '');
+  const [lensDraft, setLensDraft] = useState('');
+  const [lensItems, setLensItems] = useState<LensItem[] | null>(null);
+  const [lensBusy, setLensBusy] = useState(false);
+  const [lensError, setLensError] = useState('');
   const job = useRef(0);
   const lastFile = useRef<File | null>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -47,10 +55,22 @@ export default function App() {
     const my = ++job.current;
     lastFile.current = file;
     setError(null);
+    // 以图搜图和关键词识别各走各的，互不影响
+    setLensItems(null);
+    setLensError('');
+    setLensBusy(!!lensUrl);
+    if (lensUrl) {
+      void lensSearch(file, lensUrl)
+        .then(items => { if (my === job.current) setLensItems(items); })
+        .catch((e: Error) => { if (my === job.current) setLensError(e.message); })
+        .finally(() => { if (my === job.current) setLensBusy(false); });
+    }
     if (!API_URL && !key) {
       setPhoto(URL.createObjectURL(file));
-      setError({ message: '先填入 Gemini 密钥才能识别商品，见页面底部。', retryable: false });
-      setKeyPrompt(n => n + 1);
+      if (!lensUrl) {
+        setError({ message: '先填入 Gemini 密钥才能识别商品，见页面底部。', retryable: false });
+        setKeyPrompt(n => n + 1);
+      }
       return;
     }
     // 失败时回到上一张照片和上一次的结果
@@ -104,6 +124,25 @@ export default function App() {
       <HStack gap={2} vAlign="center" hAlign="between">
         <Text type="body" weight="bold">{name}</Text>
         <Icon icon={ArrowTopRightOnSquareIcon} size="sm" color="secondary" />
+      </HStack>
+    </ClickableCard>
+  );
+
+  const lensRow = (m: LensItem, i: number) => (
+    <ClickableCard key={m.link + i} label={m.title} href={m.link} target="_blank" padding={3}>
+      <HStack gap={3} vAlign="center">
+        {m.thumbnail && (
+          <Card padding={0} width={56}>
+            <AspectRatio ratio={1}>
+              <img src={m.thumbnail} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            </AspectRatio>
+          </Card>
+        )}
+        <VStack gap={0}>
+          {m.price && <Text type="body" weight="bold">{m.price}</Text>}
+          <Text type="body" maxLines={2}>{m.title}</Text>
+          <Text type="supporting" color="secondary">{m.source}</Text>
+        </VStack>
       </HStack>
     </ClickableCard>
   );
@@ -177,6 +216,32 @@ export default function App() {
               </VStack>
             )}
 
+            {(lensBusy || lensItems || lensError) && (
+              <VStack gap={2}>
+                <Heading level={2}>同款商品</Heading>
+                {lensBusy && (
+                  <VStack gap={2}>
+                    <Skeleton height={72} />
+                    <Skeleton height={72} index={1} />
+                    <Skeleton height={72} index={2} />
+                  </VStack>
+                )}
+                {lensError && <Banner status="error" title={lensError} collapsible={false} />}
+                {lensItems && lensItems.length === 0 && <Text type="body" color="secondary">没有找到相似商品，换个角度或光线再拍一张。</Text>}
+                {lensItems && lensItems.length > 0 && (
+                  <VStack gap={2}>
+                    <Text type="supporting" color="secondary">按图片相似度，来自 Google。价格仅供参考，以店铺页面为准。</Text>
+                    {[...lensItems].sort((x, y) => Number(!!y.price) - Number(!!x.price)).slice(0, 12).map(lensRow)}
+                    {lensItems.length > 12 && (
+                      <Collapsible trigger={<Text type="body" weight="bold">更多相似页面</Text>} defaultIsOpen={false}>
+                        <VStack gap={2}>{[...lensItems].sort((x, y) => Number(!!y.price) - Number(!!x.price)).slice(12).map(lensRow)}</VStack>
+                      </Collapsible>
+                    )}
+                  </VStack>
+                )}
+              </VStack>
+            )}
+
             {showResult && (
               <VStack gap={5}>
                 <VStack gap={2}>
@@ -221,36 +286,17 @@ export default function App() {
               </VStack>
             )}
 
-            {photo && !busy && (
-              <VStack gap={2}>
-                <Heading level={2}>用各 App 以图搜图</Heading>
-                <Text type="body" color="secondary">不依赖上面的识别。先把照片存进相册，再到各 App 的相机搜索里选最新一张。</Text>
-                {lastFile.current && navigator.canShare?.({ files: [lastFile.current] }) && (
-                  <Button
-                    label="保存照片 / 分享给 App"
-                    variant="secondary"
-                    size="lg"
-                    width="100%"
-                    onClick={() => void navigator.share({ files: [lastFile.current!] }).catch(() => undefined)}
-                  />
-                )}
-                <Text type="supporting" color="secondary">在分享菜单里选「存储图像」。若菜单里直接有 Google 或其他 App，也可以直接选。</Text>
-                {[
-                  ['Google Lens', '打开 Google App，点搜索栏里的相机图标，选最新照片。'],
-                  ['Amazon', '打开 Amazon App，点搜索栏右侧的相机图标，选最新照片。'],
-                  ['乐天市场', '打开乐天 App，用搜索栏里的图片搜索（画像検索），选最新照片。'],
-                  ['Mercari', '打开 Mercari App，点搜索栏里的相机图标，选最新照片。'],
-                  ['淘宝 / 京东 / 拼多多', '打开 App，找搜索栏里的相机图标，选最新照片。入口位置因版本而异，我没有逐一核实。']
-                ].map(([name, steps]) => (
-                  <VStack key={name} gap={0}>
-                    <Text type="body" weight="bold">{name}</Text>
-                    <Text type="supporting" color="secondary">{steps}</Text>
-                  </VStack>
-                ))}
-              </VStack>
-            )}
+            <Text type="supporting" color="secondary">照片会发给 Google（Gemini 识别、Lens 以图搜图）和 SerpApi 处理。请避免拍到人脸、证件和个人信息。</Text>
 
-            <Text type="supporting" color="secondary">照片仅用于识别商品，由 Google Gemini 处理。请避免拍到人脸、证件和个人信息。</Text>
+            {!LENS_URL && (
+              <Collapsible trigger={<Text type="body" weight="bold">图搜服务地址</Text>} defaultIsOpen={!lensUrl}>
+                <VStack gap={2}>
+                  <Text type="supporting" color="secondary">填入你部署的 Worker 地址（形如 https://….workers.dev）。只保存在这台设备的浏览器里。</Text>
+                  <TextInput label="服务地址" value={lensDraft} onChange={setLensDraft} autoComplete="off" />
+                  <Button label="保存地址" onClick={() => { const url = lensDraft.trim(); localStorage.setItem('lens-url', url); setLensUrl(url); setLensDraft(''); }} />
+                </VStack>
+              </Collapsible>
+            )}
 
             {!API_URL && (
               <VStack gap={0} ref={keyBox}>

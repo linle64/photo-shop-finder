@@ -23,6 +23,21 @@ export default {
     const { image } = await req.json();
     if (typeof image !== 'string' || image.length > MAX_IMAGE_CHARS) return reply({ error: '图片太大或格式不对' }, 413);
 
+    // /lens：用 SerpApi 的 Google Lens 以图搜图，返回同款商品列表（店名、价格、链接）。
+    if (new URL(req.url).pathname === '/lens') {
+      const bytes = Uint8Array.from(atob(image), c => c.charCodeAt(0));
+      if (bytes.length > 500_000) return reply({ error: '图片超过 500KB，请缩小后再试' }, 413);
+      const form = new FormData();
+      form.append('image', new Blob([bytes], { type: 'image/jpeg' }), 'photo.jpg');
+      form.append('api_key', env.SERPAPI_KEY);
+      const up = await fetch('https://serpapi.com/image', { method: 'POST', body: form }).then(r => r.json()).catch(() => ({}));
+      if (!up.image_id) return reply({ error: up.error ?? '图搜服务暂时不可用' }, 502);
+      const query = new URLSearchParams({ engine: 'google_lens', image_id: up.image_id, hl: 'ja', country: 'jp', type: 'visual_matches', api_key: env.SERPAPI_KEY });
+      const found = await fetch(`https://serpapi.com/search.json?${query}`).then(r => r.json()).catch(() => ({ error: '图搜服务暂时不可用' }));
+      if (found.error) return reply({ error: found.error }, 502);
+      return reply({ items: (found.visual_matches ?? []).slice(0, 60).map(m => ({ title: m.title, source: m.source, link: m.link, price: m.price?.value ?? '', thumbnail: m.thumbnail })) });
+    }
+
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },

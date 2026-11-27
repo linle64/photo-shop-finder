@@ -1,4 +1,5 @@
 import type { StoreType } from './shops';
+import { toJpegBase64 } from './image';
 
 /** 带中文说明的识别错误；retryable 为 false 时重试没有意义（例如密钥无效）。 */
 export class IdentifyError extends Error {
@@ -29,22 +30,7 @@ const SCHEMA = {
 
 /** 识别一张商品照片。失败时抛出带中文说明的 Error。apiUrl 为空时使用 key 直接调用 Gemini。 */
 export async function identify(file: File, apiUrl: string, key: string, onProgress: (message: string) => void): Promise<Identified> {
-  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => {
-    throw new IdentifyError('这张图片无法打开，请换一张 JPG 或 PNG 照片。', false);
-  });
-  const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const jpeg = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
-  if (!jpeg) throw new IdentifyError('这张图片太大，处理失败，请换一张或缩小后再试。', false);
-  const dataUrl = await new Promise<string>(resolve => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.readAsDataURL(jpeg);
-  });
-  const data = dataUrl.split(',')[1];
+  const data = await toJpegBase64(file).catch((e: Error) => { throw new IdentifyError(e.message, false); });
 
   const request = (model: string) => apiUrl
     ? fetch(apiUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ image: data }), signal: AbortSignal.timeout(30000) })
