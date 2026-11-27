@@ -13,7 +13,8 @@ import { Token } from '@astryxdesign/core/Token';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
-import { CameraIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline';
+import { Switch } from '@astryxdesign/core/Switch';
+import { CameraIcon, ClockIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline';
 import { identify, IdentifyError, type Identified } from './lib/identify';
 import { lensSearch, type LensItem } from './lib/lens';
 import { deskSearch, type DeskSite } from './lib/desk';
@@ -24,7 +25,7 @@ import { SHOPS, STORES } from './lib/shops';
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 // 家里电脑的 Tailscale 地址（淘宝以图搜图）。留空则不显示这一块。
 const DESK_URL = import.meta.env.VITE_DESK_URL ?? '';
-const TABS = ['jp', 'cn', 'history'] as const;
+const TABS = ['jp', 'cn'] as const;
 // 左右滑动的容器：每一页恰好占满一屏宽，滑动后停在页的起点
 const TRACK = { overflowX: 'auto', scrollSnapType: 'x mandatory', scrollbarWidth: 'none' } as const;
 const PANE = { flex: '0 0 100%', minWidth: 0, scrollSnapAlign: 'start' } as const;
@@ -46,6 +47,9 @@ export default function App() {
   const [deskBusy, setDeskBusy] = useState(false);
   const [deskError, setDeskError] = useState('');
   const [tab, setTab] = useState<(typeof TABS)[number]>('jp');
+  const [showHistory, setShowHistory] = useState(false);
+  // Gemini 关键词识别默认关闭，需要时在页面上打开
+  const [useGemini, setUseGemini] = useState(() => localStorage.getItem('use-gemini') === 'on');
   const [history, setHistory] = useState<HistoryEntry[]>(() => JSON.parse(localStorage.getItem('history') ?? '[]'));
   const job = useRef(0);
   const savedJob = useRef(0);
@@ -110,6 +114,11 @@ export default function App() {
     }
     if (photo.startsWith('blob:')) URL.revokeObjectURL(photo);
     setPhoto(URL.createObjectURL(file));
+    if (useGemini) await recognize(file, my);
+  }
+
+  async function recognize(file: File, my: number) {
+    setError(null);
     setBusy(true);
     setStatus('正在识别商品…');
     const out = await identify(file, API_URL).catch((e: unknown) => {
@@ -148,6 +157,7 @@ export default function App() {
     setEdits({});
     setLensItems(entry.lens);
     setDeskSites(entry.desk);
+    setShowHistory(false);
     setTab('jp');
     track.current?.scrollTo({ left: 0 });
   }
@@ -194,13 +204,44 @@ export default function App() {
       content={
         <LayoutContent role="main" padding={4}>
           <VStack gap={4}>
-            <VStack gap={1}>
+            <HStack gap={2} vAlign="center" hAlign="between">
               <Heading level={1}>拍照找货</Heading>
-              {!photo && <Text type="body" color="secondary">在日本看到想买的东西？拍下来，对比价格。</Text>}
-            </VStack>
+              <Button
+                label={showHistory ? '返回' : '历史'}
+                variant="ghost"
+                icon={showHistory ? undefined : <Icon icon={ClockIcon} color="inherit" />}
+                onClick={() => setShowHistory(v => !v)}
+              />
+            </HStack>
+            {!photo && !showHistory && <Text type="body" color="secondary">在日本看到想买的东西？拍下来，对比价格。</Text>}
 
             <input ref={picker} type="file" accept="image/*" hidden onChange={choose} />
 
+            {showHistory ? (
+              <VStack gap={4}>
+                <Heading level={2}>搜索历史</Heading>
+                {history.length === 0 && <Text type="body" color="secondary">还没有搜索记录。</Text>}
+                {history.map(h => (
+                  <ClickableCard key={h.id} label={h.title} padding={3} onClick={() => openHistory(h)}>
+                    <HStack gap={3} vAlign="center">
+                      <Card padding={0} width={56}>
+                        <AspectRatio ratio={1}>
+                          <img src={h.thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        </AspectRatio>
+                      </Card>
+                      <VStack gap={0}>
+                        <Text type="body" weight="bold" maxLines={1}>{h.title}</Text>
+                        <Text type="supporting" color="secondary">{new Date(h.at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</Text>
+                      </VStack>
+                    </HStack>
+                  </ClickableCard>
+                ))}
+                {history.length > 0 && (
+                  <Button label="清空历史" variant="secondary" onClick={() => { setHistory([]); localStorage.removeItem('history'); }} />
+                )}
+              </VStack>
+            ) : (
+              <VStack gap={4}>
             {photo ? (
               <HStack gap={3} vAlign="start">
                 <ClickableCard label="换一张照片" padding={0} width={96} onClick={() => picker.current?.click()}>
@@ -230,6 +271,17 @@ export default function App() {
               </ClickableCard>
             )}
             <Text type="body" color="secondary" role="status" aria-live="polite">{busy ? status : ''}</Text>
+
+            <Switch
+              label="用 Gemini 识别关键词"
+              description="默认关闭。打开后会生成日本网店和国内平台的关键词搜索链接。"
+              value={useGemini}
+              onChange={on => {
+                setUseGemini(on);
+                localStorage.setItem('use-gemini', on ? 'on' : 'off');
+                if (on && lastFile.current && !result && !busy) void recognize(lastFile.current, job.current);
+              }}
+            />
 
             {error && (
               <Banner
@@ -265,10 +317,9 @@ export default function App() {
             >
               <Tab value="jp" label="日本" />
               <Tab value="cn" label="国内" />
-              <Tab value="history" label="历史" />
             </TabList>
 
-            <HStack ref={track} gap={0} vAlign="start" style={TRACK} aria-label="日本、国内、历史">
+            <HStack ref={track} gap={0} vAlign="start" style={TRACK} aria-label="日本、国内">
               <VStack gap={5} style={PANE}>
                 {(lensBusy || lensItems || lensError) && (
                   <VStack gap={2}>
@@ -315,6 +366,7 @@ export default function App() {
                 )}
 
                 {!photo && <Text type="body" color="secondary">拍一张照片，这里会显示日本网店的同款商品。</Text>}
+                {photo && !result && !useGemini && <Text type="supporting" color="secondary">想要日本网店和国内平台的关键词搜索链接？打开上方的“用 Gemini 识别关键词”。</Text>}
 
                 <Collapsible trigger={<Text type="body" weight="bold">退税提醒</Text>} defaultIsOpen={false}>
                   <Text type="body" color="secondary">日本免税购物自 2026 年 11 月起改为：店里先付含税价，出境时办理手续后再退还消费税。具体条件和截止日期请以日本观光厅官方说明为准。</Text>
@@ -354,30 +406,11 @@ export default function App() {
                 {!photo && <Text type="body" color="secondary">拍一张照片，这里会显示淘宝的同款商品和国内平台的搜索入口。</Text>}
               </VStack>
 
-              <VStack gap={2} style={PANE}>
-                {history.length === 0 && <Text type="body" color="secondary">还没有搜索记录。</Text>}
-                {history.map(h => (
-                  <ClickableCard key={h.id} label={h.title} padding={3} onClick={() => openHistory(h)}>
-                    <HStack gap={3} vAlign="center">
-                      <Card padding={0} width={56}>
-                        <AspectRatio ratio={1}>
-                          <img src={h.thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                        </AspectRatio>
-                      </Card>
-                      <VStack gap={0}>
-                        <Text type="body" weight="bold" maxLines={1}>{h.title}</Text>
-                        <Text type="supporting" color="secondary">{new Date(h.at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</Text>
-                      </VStack>
-                    </HStack>
-                  </ClickableCard>
-                ))}
-                {history.length > 0 && (
-                  <Button label="清空历史" variant="secondary" onClick={() => { setHistory([]); localStorage.removeItem('history'); }} />
-                )}
-              </VStack>
             </HStack>
 
             <Text type="supporting" color="secondary">照片会发给 Google（Gemini 识别、Lens 以图搜图）和 SerpApi 处理，淘宝以图搜图在你自己的电脑上进行。请避免拍到人脸、证件和个人信息。</Text>
+              </VStack>
+            )}
           </VStack>
         </LayoutContent>
       }
