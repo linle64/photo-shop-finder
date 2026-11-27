@@ -16,6 +16,7 @@ import { Collapsible } from '@astryxdesign/core/Collapsible';
 import { CameraIcon, ArrowTopRightOnSquareIcon } from '@heroicons/react/24/outline';
 import { identify, IdentifyError, type Identified } from './lib/identify';
 import { lensSearch, type LensItem } from './lib/lens';
+import { deskSearch, type DeskSite } from './lib/desk';
 import { SHOPS, STORES } from './lib/shops';
 
 // 识别代理地址。部署 worker/ 后在构建时设置 VITE_API_URL，游客就不需要自己的密钥。
@@ -39,6 +40,11 @@ export default function App() {
   const [lensItems, setLensItems] = useState<LensItem[] | null>(null);
   const [lensBusy, setLensBusy] = useState(false);
   const [lensError, setLensError] = useState('');
+  const [deskUrl, setDeskUrl] = useState(() => localStorage.getItem('desk-url') ?? '');
+  const [deskDraft, setDeskDraft] = useState('');
+  const [deskSites, setDeskSites] = useState<DeskSite[] | null>(null);
+  const [deskBusy, setDeskBusy] = useState(false);
+  const [deskError, setDeskError] = useState('');
   const job = useRef(0);
   const lastFile = useRef<File | null>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -59,6 +65,15 @@ export default function App() {
     setLensItems(null);
     setLensError('');
     setLensBusy(!!lensUrl);
+    setDeskSites(null);
+    setDeskError('');
+    setDeskBusy(!!deskUrl);
+    if (deskUrl) {
+      void deskSearch(file, deskUrl)
+        .then(sites => { if (my === job.current) setDeskSites(sites); })
+        .catch((e: Error) => { if (my === job.current) setDeskError(e.message); })
+        .finally(() => { if (my === job.current) setDeskBusy(false); });
+    }
     if (lensUrl) {
       void lensSearch(file, lensUrl)
         .then(items => { if (my === job.current) setLensItems(items); })
@@ -67,7 +82,7 @@ export default function App() {
     }
     if (!API_URL && !key) {
       setPhoto(URL.createObjectURL(file));
-      if (!lensUrl) {
+      if (!lensUrl && !deskUrl) {
         setError({ message: '先填入 Gemini 密钥才能识别商品，见页面底部。', retryable: false });
         setKeyPrompt(n => n + 1);
       }
@@ -242,6 +257,27 @@ export default function App() {
               </VStack>
             )}
 
+            {(deskBusy || deskSites || deskError) && (
+              <VStack gap={2}>
+                <Heading level={2}>淘宝同款（家里电脑）</Heading>
+                {deskBusy && (
+                  <VStack gap={2}>
+                    <Text type="supporting" color="secondary">家里电脑正在淘宝上搜图，约需 20–30 秒…</Text>
+                    <Skeleton height={72} />
+                  </VStack>
+                )}
+                {deskError && <Banner status="error" title={deskError} collapsible={false} />}
+                {deskSites?.map(site => (
+                  <VStack key={site.site} gap={2}>
+                    {site.status === 'blocked' && <Banner status="warning" title="淘宝要求验证，需要回到电脑前处理后再试。" collapsible={false} />}
+                    {site.status === 'login' && <Banner status="warning" title="家里电脑上的淘宝登录过期了，需要在电脑上重新登录。" collapsible={false} />}
+                    {site.status === 'error' && <Banner status="error" title="这次没有解析出淘宝结果，请重试。" collapsible={false} />}
+                    {site.items.slice(0, 12).map(lensRow)}
+                  </VStack>
+                ))}
+              </VStack>
+            )}
+
             {showResult && (
               <VStack gap={5}>
                 <VStack gap={2}>
@@ -264,7 +300,7 @@ export default function App() {
                 <VStack gap={2}>
                   <Heading level={2}>国内平台</Heading>
                   {SHOPS.cn.map(s => siteRow(s[0], link(s, cnKeyword)))}
-                  <Text type="supporting" color="secondary">价格为人民币，部分是代购价，仅供参考；部分页面需要登录或打开 App。</Text>
+                  <Text type="supporting" color="secondary">价格为人民币，部分是代购价，仅供参考；部分页面需要登录或打开 App。拼多多网页版不支持图搜，只能在拼多多 App 里用“拍照搜同款”。</Text>
                 </VStack>
 
                 <VStack gap={2}>
@@ -297,6 +333,14 @@ export default function App() {
                 </VStack>
               </Collapsible>
             )}
+
+            <Collapsible trigger={<Text type="body" weight="bold">家里电脑地址</Text>} defaultIsOpen={false}>
+              <VStack gap={2}>
+                <Text type="supporting" color="secondary">填入家里电脑的 Tailscale 地址（形如 https://….ts.net）。留空则不使用。只保存在这台设备的浏览器里。</Text>
+                <TextInput label="电脑地址" value={deskDraft} onChange={setDeskDraft} autoComplete="off" />
+                <Button label="保存地址" onClick={() => { const url = deskDraft.trim(); localStorage.setItem('desk-url', url); setDeskUrl(url); setDeskDraft(''); }} />
+              </VStack>
+            </Collapsible>
 
             {!API_URL && (
               <VStack gap={0} ref={keyBox}>
