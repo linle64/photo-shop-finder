@@ -1,5 +1,7 @@
-// 拍照找货识别代理：密钥、提示词、限制都在这里，页面只传一张图片。
-const MODEL = 'gemini-3.8-flash';
+// 拍照找货后端：Gemini 密钥、SerpApi 密钥、提示词、限制都在这里，页面只传一张图片。
+//   POST /      用 Gemini 识别商品，返回关键词和说明
+//   POST /lens  用 SerpApi 的 Google Lens 以图搜图，返回同款商品列表
+const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
 const MAX_IMAGE_CHARS = 1_500_000; // base64 约 1.1MB
 const PROMPT = '你在帮来日本旅游的中文游客识别商品。识别图中的主要商品，输出：1) keywords：3 个购物网站搜索关键词，按从具体到通用排序（第 1 个是品牌加型号或款式，第 2 个是商品类型加关键特征，第 3 个只写品类），每个同时给中文 zh、英文 en、日文 jp，日文要用日本网店里实际使用的说法；品牌或型号看不清时不要编造。2) storeType：这件商品在日本通常去哪类店买。3) summary：用不超过 60 个中文字说明这是什么、怎么用、需要注意什么（如成分、适用人群、保质期）；包装上有日文时翻译要点。';
 const KEYWORD = { type: 'OBJECT', required: ['zh', 'en', 'jp'], properties: { zh: { type: 'STRING' }, en: { type: 'STRING' }, jp: { type: 'STRING' } } };
@@ -12,6 +14,8 @@ const SCHEMA = {
     summary: { type: 'STRING' }
   }
 };
+
+let modelCache = { at: 0, names: [] };
 
 export default {
   async fetch(req, env) {
@@ -38,14 +42,41 @@ export default {
       return reply({ items: (found.visual_matches ?? []).slice(0, 60).map(m => ({ title: m.title, source: m.source, link: m.link, price: m.price?.value ?? '', thumbnail: m.thumbnail })) });
     }
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-      body: JSON.stringify({
-        contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: image } }, { text: PROMPT }] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA }
-      })
-    });
+    // 默认：Gemini 识别。向 Google 查询当前可用的 flash 模型（缓存 10 分钟），503/429/404 时换下一个，最多两轮。
+    if (Date.now() - modelCache.at > 600_000) {
+      const names = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': env.GEMINI_API_KEY }, signal: AbortSignal.timeout(8000) })
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => (j?.models ?? [])
+          .filter(m => m.supportedGenerationMethods?.includes('generateContent') && /flash/.test(m.name) && !/image|tts|live|audio|embed|robotics|computer|gemma|thinking/.test(m.name))
+          .map(m => m.name.replace('models/', ''))
+          .sort((x, y) => Number(/\d+(\.\d+)?/.exec(y)?.[0] ?? 0) - Number(/\d+(\.\d+)?/.exec(x)?.[0] ?? 0) || Number(/lite/.test(x)) - Number(/lite/.test(y)))
+          .slice(0, 6))
+        .catch(() => []);
+      modelCache = { at: Date.now(), names };
+    }
+    const models = modelCache.names.length ? modelCache.names : FALLBACK_MODELS;
+    const gone = new Set();
+    let res = null;
+    for (let round = 0; round < 2; round++) {
+      for (const model of models) {
+        if (gone.has(model)) continue;
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+          body: JSON.stringify({
+            contents: [{ parts: [{ inline_data: { mime_type: 'image/jpeg', data: image } }, { text: PROMPT }] }],
+            generationConfig: { responseMimeType: 'application/json', responseSchema: SCHEMA }
+          }),
+          signal: AbortSignal.timeout(20000)
+        }).catch(() => null);
+        if (res?.status === 404) gone.add(model);
+        if (res && ![503, 404, 429].includes(res.status)) break;
+      }
+      if (res && ![503, 404, 429].includes(res.status)) break;
+      if (round < 1) await new Promise(r => setTimeout(r, 2000));
+    }
+    if (!res) return reply({ error: '识别服务暂时连不上，请稍后再试' }, 503);
+    if (res.status === 400 || res.status === 403) return reply({ error: '识别服务配置有误' }, 502);
     if (!res.ok) return reply({ error: '识别服务繁忙，请稍后再试' }, res.status === 429 ? 429 : 503);
 
     const text = (await res.json()).candidates?.[0]?.content?.parts?.[0]?.text;
